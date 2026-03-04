@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 # 🎨 테마 설정
 st.set_page_config(
-    page_title="Link Price Tracker",
+    page_title="Grocery Price Tracker",
     page_icon="📊",
     layout="wide"
 )
@@ -110,20 +110,35 @@ if 'products' not in st.session_state:
 # ==========================================
 # (A) 헤더 및 입력 섹션
 # ==========================================
-st.markdown("<h1 style='text-align: center;'>Universal Price Tracker</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-header' style='text-align: center;'>어느 쇼핑몰이든 링크만 넣으면 가격 추적을 시작합니다.</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>Grocery Price Tracker</h1>", unsafe_allow_html=True)
+st.markdown("<p class='sub-header' style='text-align: center;'>브랜드 직영몰 및 공식 쇼핑몰 전용 가격 추적 서비스</p>", unsafe_allow_html=True)
 
 input_col, btn_col = st.columns([7, 1], gap="small", vertical_alignment="bottom")
 
 with input_col:
     url_input = st.text_input(
         "상품 URL 입력", 
-        placeholder="https://... (추적할 상품의 링크를 붙여넣으세요)",
+        placeholder="https://...",
         label_visibility="collapsed"
     )
 
 with btn_col:
     add_btn = st.button("추가하기", use_container_width=True)
+
+st.write("") # 약간의 여백
+with st.expander("🔍 추적 가능한 쇼핑몰을 확인하세요"):
+    st.markdown("""
+| 쇼핑몰 구분 | 사이트명 | 공식 웹사이트 주소 (URL) |
+| :--- | :--- | :--- |
+| 브랜드 직영몰 | CJ 더마켓 | https://www.cjthemarket.com |
+| 브랜드 직영몰 | 오뚜기몰 | https://www.ottogimall.co.kr |
+| 브랜드 직영몰 | 동원몰 | https://www.dongwonmall.com |
+| 신선식품 전문 | 마켓컬리 | https://www.kurly.com |
+| 신선식품 전문 | 오아시스마켓 | https://www.oasis.co.kr |
+| 대형마트/통합 | SSG닷컴 (이마트) | https://www.ssg.com |
+| 대형마트/통합 | 롯데마트 (제타플렉스) | https://www.lottemart.com |
+| 대형마트/통합 | 홈플러스 | https://mfront.homeplus.co.kr |
+    """)
 
 # "추가하기" 버튼 로직 (실제 크롤링 엔진 적용)
 if add_btn and url_input:
@@ -183,7 +198,7 @@ if add_btn and url_input:
 num_products = len(st.session_state.products)
 
 if num_products > 0:
-    st.markdown(f"#### 📡 실시간 추적 대시보드 (총 {num_products}개 상품)")
+    st.markdown(f"#### 실시간 추적 대시보드 (총 {num_products}개 상품)")
     st.divider()
     
     cols_per_row = 4
