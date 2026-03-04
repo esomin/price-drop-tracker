@@ -113,17 +113,18 @@ if 'products' not in st.session_state:
 st.markdown("<h1 style='text-align: center;'>Grocery Price Tracker</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-header' style='text-align: center;'>브랜드 직영몰 및 공식 쇼핑몰 전용 가격 추적 서비스</p>", unsafe_allow_html=True)
 
-input_col, btn_col = st.columns([7, 1], gap="small", vertical_alignment="bottom")
+with st.form(key="add_product_form", clear_on_submit=True):
+    input_col, btn_col = st.columns([7, 1], gap="small", vertical_alignment="bottom")
 
-with input_col:
-    url_input = st.text_input(
-        "상품 URL 입력", 
-        placeholder="https://...",
-        label_visibility="collapsed"
-    )
+    with input_col:
+        url_input = st.text_input(
+            "상품 URL 입력", 
+            placeholder="https://...",
+            label_visibility="collapsed"
+        )
 
-with btn_col:
-    add_btn = st.button("추가하기", use_container_width=True)
+    with btn_col:
+        add_btn = st.form_submit_button("추가하기", use_container_width=True)
 
 st.write("") # 약간의 여백
 with st.expander("🔍 추적 가능한 쇼핑몰을 확인하세요"):
@@ -142,9 +143,10 @@ with st.expander("🔍 추적 가능한 쇼핑몰을 확인하세요"):
 
 # "추가하기" 버튼 로직 (실제 크롤링 엔진 적용)
 if add_btn and url_input:
-    if url_input.startswith("http://") or url_input.startswith("https://"):
+    url_val = url_input
+    if url_val.startswith("http://") or url_val.startswith("https://"):
         
-        parsed_url = urlparse(url_input)
+        parsed_url = urlparse(url_val)
         domain = parsed_url.netloc.replace("www.", "")
         
         with st.spinner('해당 쇼핑몰에서 상품 정보를 추출하는 중입니다...'):
@@ -155,7 +157,7 @@ if add_btn and url_input:
                 }
                 
                 # 2. 실제 해당 URL로 요청 보내기
-                response = requests.get(url_input, headers=headers, timeout=5)
+                response = requests.get(url_val, headers=headers, timeout=5)
                 response.raise_for_status() # 오류 발생 시 except 블록으로 이동
                 
                 # 3. HTML 파싱
@@ -176,7 +178,7 @@ if add_btn and url_input:
                     "site_name": domain.upper(),
                     "name": extracted_name,
                     "image_url": extracted_image,
-                    "original_url": url_input,
+                    "original_url": url_val,
                     "current_price": "가격 수집 대기중..." # 다음 단계에서 구현할 부분
                 }
                 
@@ -215,14 +217,16 @@ if num_products > 0:
             
             with cols[j]:
                 st.markdown(f"""
-                    <div class="product-card">
-                        <span class="site-badge">{product['site_name']}</span>
-                        <div class="img-container">
-                            <img src="{product['image_url']}" class="product-img" alt="상품 이미지">
+                    <a href="{product['original_url']}" target="_blank" style="text-decoration: none; color: inherit;">
+                        <div class="product-card">
+                            <span class="site-badge">{product['site_name']}</span>
+                            <div class="img-container">
+                                <img src="{product['image_url']}" class="product-img" alt="상품 이미지">
+                            </div>
+                            <p class="product-title" title="{product['name']}">{product['name']}</p>
+                            <p class="price-tag">{product['current_price']}</p>
                         </div>
-                        <p class="product-title" title="{product['name']}">{product['name']}</p>
-                        <p class="price-tag">{product['current_price']}</p>
-                    </div>
+                    </a>
                 """, unsafe_allow_html=True)
                 
 else:
