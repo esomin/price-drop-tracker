@@ -1,12 +1,17 @@
 import streamlit as st
 import time
-import requests
-from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 🎨 테마 설정
 st.set_page_config(
-    page_title="Link Price Tracker",
+    page_title="Price Drop Tracker",
     page_icon="📊",
     layout="wide"
 )
@@ -107,10 +112,92 @@ st.markdown(f"""
 if 'products' not in st.session_state:
     st.session_state.products = []
 
+
+# ==========================================
+# 🌐 Selenium 크롤러 함수
+# ==========================================
+def create_driver():
+    """Headless Chrome WebDriver를 생성합니다."""
+    options = Options()
+    options.add_argument("--headless=new")           # 헤드리스 모드 (화면 없이 실행)
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    # 실제 사용자처럼 보이도록 User-Agent 설정
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+
+    # navigator.webdriver 속성을 숨겨 봇 탐지 우회
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"}
+    )
+    return driver
+
+
+def fetch_product_info(url: str) -> dict:
+    """
+    Selenium으로 URL에 접속하여 상품 정보(이름, 이미지)를 추출합니다.
+    JavaScript로 렌더링되는 동적 사이트도 처리합니다.
+    """
+    driver = create_driver()
+    try:
+        driver.get(url)
+
+        # 페이지가 어느 정도 로드될 때까지 대기 (최대 10초)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        # JS 렌더링을 위해 추가 대기
+        time.sleep(2)
+
+        # --- og:title로 상품명 추출 ---
+        extracted_name = "상품명을 찾을 수 없습니다."
+        try:
+            og_title = driver.find_element(By.XPATH, "//meta[@property='og:title']")
+            content = og_title.get_attribute("content")
+            if content:
+                extracted_name = content
+        except Exception:
+            # og:title이 없으면 <title> 태그로 대체
+            try:
+                extracted_name = driver.title or extracted_name
+            except Exception:
+                pass
+
+        # --- og:image로 이미지 추출 ---
+        extracted_image = "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
+        try:
+            og_image = driver.find_element(By.XPATH, "//meta[@property='og:image']")
+            src = og_image.get_attribute("content")
+            if src:
+                extracted_image = src
+        except Exception:
+            pass
+
+        return {
+            "name": extracted_name,
+            "image_url": extracted_image,
+        }
+
+    finally:
+        driver.quit()  # 반드시 드라이버 종료
+
+
 # ==========================================
 # (A) 헤더 및 입력 섹션
 # ==========================================
-st.markdown("<h1 style='text-align: center;'>Universal Price Tracker</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>Price DropTracker</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-header' style='text-align: center;'>어느 쇼핑몰이든 링크만 넣으면 가격 추적을 시작합니다.</p>", unsafe_allow_html=True)
 
 input_col, btn_col = st.columns([7, 1], gap="small", vertical_alignment="bottom")
@@ -125,54 +212,30 @@ with input_col:
 with btn_col:
     add_btn = st.button("추가하기", use_container_width=True)
 
-# "추가하기" 버튼 로직 (실제 크롤링 엔진 적용)
+# "추가하기" 버튼 로직 (Selenium 크롤링 엔진)
 if add_btn and url_input:
     if url_input.startswith("http://") or url_input.startswith("https://"):
-        
-        parsed_url = urlparse(url_input)
-        domain = parsed_url.netloc.replace("www.", "")
-        
-        with st.spinner('해당 쇼핑몰에서 상품 정보를 추출하는 중입니다...'):
+        domain = urlparse(url_input).netloc.replace("www.", "").replace("m.", "").split(".")[0]
+
+        with st.spinner('Selenium으로 페이지를 불러오는 중... (10~20초 소요될 수 있습니다)'):
             try:
-                # 1. 봇 차단을 막기 위한 헤더 설정
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
-                
-                # 2. 실제 해당 URL로 요청 보내기
-                response = requests.get(url_input, headers=headers, timeout=5)
-                response.raise_for_status() # 오류 발생 시 except 블록으로 이동
-                
-                # 3. HTML 파싱
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # 4. og:title 추출
-                og_title = soup.find("meta", property="og:title")
-                extracted_name = og_title["content"] if og_title else "상품명을 찾을 수 없습니다."
-                
-                # 5. og:image 추출
-                og_image = soup.find("meta", property="og:image")
-                extracted_image = og_image["content"] if og_image else "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
-                
-                # 6. 세션 상태에 저장
+                product_info = fetch_product_info(url_input)
+
                 new_id = len(st.session_state.products) + 1
                 real_product = {
                     "id": new_id,
                     "site_name": domain.upper(),
-                    "name": extracted_name,
-                    "image_url": extracted_image,
+                    "name": product_info["name"],
+                    "image_url": product_info["image_url"],
                     "original_url": url_input,
-                    "current_price": "가격 수집 대기중..." # 다음 단계에서 구현할 부분
+                    "current_price": "가격 수집 대기중..."  # 다음 단계에서 구현할 부분
                 }
-                
+
                 st.session_state.products.append(real_product)
                 st.rerun()
 
-            except requests.exceptions.RequestException as e:
-                st.error("페이지에 접속할 수 없습니다. 링크가 정확한지, 혹은 해당 사이트에서 봇 접근을 차단했는지 확인해주세요.")
             except Exception as e:
                 st.error(f"데이터 추출 중 오류가 발생했습니다: {e}")
-                
     else:
         st.error("올바른 URL 형식(http:// 또는 https://)을 입력해주세요.")
 
