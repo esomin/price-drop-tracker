@@ -1,13 +1,20 @@
 import streamlit as st
 import time
+import random
+import os
+import ssl
+import certifi
 from urllib.parse import urlparse
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+
+# 🔐 macOS Python SSL 인증서 문제 해결
+# Python 3.13 + macOS venv 환경에서 certifi 인증서를 명시적으로 지정
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+
+import undetected_chromedriver as uc
 
 # 🎨 테마 설정
 st.set_page_config(
@@ -114,98 +121,171 @@ if 'products' not in st.session_state:
 
 
 # ==========================================
-# 🌐 Selenium 크롤러 함수
+# 🌐 undetected-chromedriver 크롤러 함수
 # ==========================================
 def create_driver():
-    """Headless Chrome WebDriver를 생성합니다."""
-    options = Options()
-    options.add_argument("--headless=new")           # 헤드리스 모드 (화면 없이 실행)
+    """
+    undetected-chromedriver로 실제 Chrome을 실행합니다.
+    headless 모드는 쿠팡(Cloudflare)·네이버에서 탐지되므로
+    비헤드리스(headless=False) + 창 최소화로 우회합니다.
+    """
+    options = uc.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--window-size=1280,800")
+    options.add_argument("--lang=ko-KR")
+    options.add_argument("--disable-infobars")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    # 실제 사용자처럼 보이도록 User-Agent 설정
+    # Chrome 145와 일치하는 실제 User-Agent
     options.add_argument(
-        "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/145.0.0.0 Safari/537.36"
     )
+    # 비헤드리스 모드 (headless는 Cloudflare·Naver 탐지에 걸림)
+    driver = uc.Chrome(options=options, headless=False, use_subprocess=True, version_main=145)
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # 창을 즉시 최소화 (UI 방해 최소화)
+    driver.minimize_window()
 
-    # navigator.webdriver 속성을 숨겨 봇 탐지 우회
+    # ── 스텔스 JS 패치 ──────────────────────────────────────────
+    # headless가 아니어도 webdriver 잔재·fingerprint를 추가로 숨김
+    stealth_js = """
+        // navigator.webdriver 완전 제거
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+        // 플러그인 목록 채우기 (headless는 보통 0개)
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                { name: 'Chrome PDF Plugin' },
+                { name: 'Chrome PDF Viewer' },
+                { name: 'Native Client' }
+            ]
+        });
+
+        // 언어 설정 (한국어 환경처럼)
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['ko-KR', 'ko', 'en-US', 'en']
+        });
+
+        // window.chrome 객체 존재 확인 (headless에서 없으면 탐지됨)
+        if (!window.chrome) {
+            window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+        }
+
+        // Notification 권한 쿼리 우회
+        const _origQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (params) =>
+            params.name === 'notifications'
+                ? Promise.resolve({ state: Notification.permission })
+                : _origQuery(params);
+
+        // iframe 안에서도 webdriver 속성 숨김
+        const _origGetter = HTMLIFrameElement.prototype.__lookupGetter__('contentWindow');
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+            get: function() {
+                const win = _origGetter.call(this);
+                if (win) {
+                    try {
+                        Object.defineProperty(win.navigator, 'webdriver', { get: () => undefined });
+                    } catch(e) {}
+                }
+                return win;
+            }
+        });
+    """
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
-        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"}
+        {"source": stealth_js}
     )
     return driver
 
 
-def fetch_product_info(url: str) -> dict:
-    """
-    Selenium으로 URL에 접속하여 상품 정보(이름, 이미지)를 추출합니다.
-    JavaScript로 렌더링되는 동적 사이트도 처리합니다.
-    """
-    driver = create_driver()
+def human_scroll(driver):
+    """봇처럼 보이지 않도록 자연스러운 스크롤 동작을 수행합니다."""
+    total_height = driver.execute_script("return document.body.scrollHeight")
+    scroll_step = random.randint(300, 600)
+    current = 0
+    while current < min(total_height, 2000):
+        current += scroll_step
+        driver.execute_script(f"window.scrollTo(0, {current});")
+        time.sleep(random.uniform(0.2, 0.5))
+    driver.execute_script("window.scrollTo(0, 0);")
+
+
+def wait_for_page_ready(driver, timeout=20):
+    """페이지가 완전히 로드될 때까지 대기합니다."""
+    WebDriverWait(driver, timeout).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+
+def extract_og_tags(driver):
+    """og:title, og:image 메타 태그를 추출합니다."""
+    name = None
+    image = None
     try:
-        driver.get(url)
-
-        # 페이지가 어느 정도 로드될 때까지 대기 (최대 10초)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        # JS 렌더링을 위해 추가 대기
-        time.sleep(2)
-
-        # --- og:title로 상품명 추출 ---
-        extracted_name = "상품명을 찾을 수 없습니다."
+        el = driver.find_element(By.XPATH, "//meta[@property='og:title']")
+        name = el.get_attribute("content") or None
+    except Exception:
+        pass
+    if not name:
         try:
-            og_title = driver.find_element(By.XPATH, "//meta[@property='og:title']")
-            content = og_title.get_attribute("content")
-            if content:
-                extracted_name = content
-        except Exception:
-            # og:title이 없으면 <title> 태그로 대체
-            try:
-                extracted_name = driver.title or extracted_name
-            except Exception:
-                pass
-
-        # --- og:image로 이미지 추출 ---
-        extracted_image = "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
-        try:
-            og_image = driver.find_element(By.XPATH, "//meta[@property='og:image']")
-            src = og_image.get_attribute("content")
-            if src:
-                extracted_image = src
+            name = driver.title or None
         except Exception:
             pass
 
+    try:
+        el = driver.find_element(By.XPATH, "//meta[@property='og:image']")
+        image = el.get_attribute("content") or None
+    except Exception:
+        pass
+
+    return name, image
+
+
+def fetch_product_info(url: str) -> dict:
+    """
+    undetected-chromedriver로 URL에 접속하여 상품 정보를 추출합니다.
+    Naver, Coupang 등 강력한 봇 탐지 사이트를 처리합니다.
+    """
+    driver = create_driver()
+    NO_IMAGE = "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
+
+    try:
+        # 본 상품 URL 접속
+        driver.get(url)
+        wait_for_page_ready(driver, timeout=25)
+
+        # JS 렌더링 + Cloudflare/봇 감지 해제 대기
+        time.sleep(random.uniform(3, 5))
+        human_scroll(driver)
+        time.sleep(random.uniform(1, 2))
+
+        # og 태그 추출
+        extracted_name, extracted_image = extract_og_tags(driver)
+
         return {
-            "name": extracted_name,
-            "image_url": extracted_image,
+            "name": extracted_name or "상품명을 찾을 수 없습니다.",
+            "image_url": extracted_image or NO_IMAGE,
         }
 
     finally:
-        driver.quit()  # 반드시 드라이버 종료
+        driver.quit()
 
 
 # ==========================================
 # (A) 헤더 및 입력 섹션
 # ==========================================
 st.markdown("<h1 style='text-align: center;'>Price DropTracker</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-header' style='text-align: center;'>어느 쇼핑몰이든 링크만 넣으면 가격 추적을 시작합니다.</p>", unsafe_allow_html=True)
+st.markdown("<p class='sub-header' style='text-align: center;'>링크를 붙여 넣으면 가격 추적을 시작합니다.</p>", unsafe_allow_html=True)
 
 input_col, btn_col = st.columns([7, 1], gap="small", vertical_alignment="bottom")
 
 with input_col:
     url_input = st.text_input(
         "상품 URL 입력", 
-        placeholder="https://... (추적할 상품의 링크를 붙여넣으세요)",
+        placeholder="https://...",
         label_visibility="collapsed"
     )
 
@@ -246,7 +326,7 @@ if add_btn and url_input:
 num_products = len(st.session_state.products)
 
 if num_products > 0:
-    st.markdown(f"#### 📡 실시간 추적 대시보드 (총 {num_products}개 상품)")
+    st.markdown(f"#### 실시간 추적 대시보드 (총 {num_products}개 상품)")
     st.divider()
     
     cols_per_row = 4
