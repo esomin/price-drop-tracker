@@ -1,14 +1,15 @@
 import streamlit as st
 import time
-# import requests
-from curl_cffi import requests as impersonate_requests # requests 대신 사용
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+from utils import get_site_type, format_price
+from parsers import parse_product_info
 
 # 테마 설정
 st.set_page_config(
     page_title="Grocery Price Tracker",
-    page_icon="📊",
+    page_icon="🍏",
     layout="wide"
 )
 
@@ -133,13 +134,10 @@ with st.expander("추적 가능한 쇼핑몰을 확인하세요"):
 | 쇼핑몰 구분 | 사이트명 | 공식 웹사이트 주소 (URL) |
 | :--- | :--- | :--- |
 | 신선식품 전문 | 마켓컬리 | https://www.kurly.com |
-| 대형마트/통합 | SSG닷컴 (이마트) | https://www.ssg.com |
 | 신선식품 전문 | 오아시스마켓 | https://www.oasis.co.kr |
+| 대형마트/통합 | 이마트몰 | https://emart.ssg.com |
 | 대형마트/통합 | 홈플러스 | https://mfront.homeplus.co.kr |
 | 대형마트/통합 | 롯데마트 (제타플렉스) | https://www.lottemart.com |
-| 브랜드 직영몰 | CJ 더마켓 | https://www.cjthemarket.com |
-| 브랜드 직영몰 | 오뚜기몰 | https://www.ottogimall.co.kr |
-| 브랜드 직영몰 | 동원몰 | https://www.dongwonmall.com |
     """)
 
 # "추가하기" 버튼 로직 (실제 크롤링 엔진 적용)
@@ -159,36 +157,32 @@ if add_btn and url_input:
 
                 # 2. 실제 해당 URL로 요청 보내기
 #                 response = requests.get(url_val, headers=headers, timeout=5)
-                response = impersonate_requests.get(
+                response = requests.get(
                             url_val,
                             impersonate="chrome120", # 크롬 브라우저와 똑같은 지문 생성
                             timeout=10
                         )
-                print(f"DEBUG: Status Code = {response.status_code}")
-                print(f"DEBUG: Response Headers = {response.headers.get('Content-Type')}")
+#                 print(f"DEBUG: Status Code = {response.status_code}")
+#                 print(f"DEBUG: Response Headers = {response.headers.get('Content-Type')}")
                 response.raise_for_status() # 오류 발생 시 except 블록으로 이동
 
                 # 3. HTML 파싱
                 soup = BeautifulSoup(response.text, 'html.parser')
-                head_content = soup.find("head")
-                print("DEBUG: <head> 내용 일부 출력 ------------------")
-                print(str(head_content)[:500] if head_content else "Head 태그를 찾을 수 없음")
 
-                # 4. og:title 추출
-                og_title = soup.find("meta", property="og:title")
-                extracted_name = og_title["content"] if og_title else "상품명을 찾을 수 없습니다."
+                # 4. 쇼핑몰 타입 식별
+                site_type = get_site_type(url_val)
 
-                # 5. 이미지 추출 (우선순위: link preload > og:image)
-                # 먼저 <link rel="preload" as="image"> 태그 확인
-                preload_image = soup.find("link", attrs={"rel": "preload", "as": "image"})
-                if preload_image and preload_image.get("href"):
-                    extracted_image = preload_image["href"]
-                else:
-                    # preload 이미지가 없으면 og:image 사용
-                    og_image = soup.find("meta", property="og:image")
-                    extracted_image = og_image["content"] if og_image else "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
+                # 5. 파서를 통해 상품 정보 추출
+                product_info = parse_product_info(soup, site_type, url_val)
 
-                # 6. 세션 상태에 저장
+                extracted_name = product_info['name']
+                extracted_image = product_info['image_url']
+                extracted_price = product_info['price']
+
+                # 6. 가격 포맷팅
+                formatted_price = format_price(extracted_price)
+
+                # 7. 세션 상태에 저장
                 new_id = len(st.session_state.products) + 1
                 real_product = {
                     "id": new_id,
@@ -196,13 +190,14 @@ if add_btn and url_input:
                     "name": extracted_name,
                     "image_url": extracted_image,
                     "original_url": url_val,
-                    "current_price": "가격 수집 대기중..." # 다음 단계에서 구현할 부분
+                    "current_price": formatted_price,
+                    "price_number": extracted_price  # 숫자값 저장 (향후 가격 비교/정렬 용)
                 }
                 
                 st.session_state.products.append(real_product)
                 st.rerun()
 
-            except impersonate_requests.exceptions.RequestException as e:
+            except requests.exceptions.RequestException as e:
                 st.error("페이지에 접속할 수 없습니다. 링크가 정확한지, 혹은 해당 사이트에서 봇 접근을 차단했는지 확인해주세요.")
             except Exception as e:
                 st.error(f"데이터 추출 중 오류가 발생했습니다: {e}")
