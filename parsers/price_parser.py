@@ -12,15 +12,53 @@ class CommonParser(BaseParser):
     공통 파서 로직
     """
     def parse_price(self):
-        # 공통: JSON-LD 스키마 시도 (가장 정확)
+        # 방법 1: JSON-LD 스키마 시도 (가장 정확)
         json_ld = self.soup.find('script', type='application/ld+json')
         if json_ld:
             try:
                 data = json.loads(json_ld.text)
+
+                # 케이스 A: {"@type": "Product", ...} 형태
                 if isinstance(data, dict) and data.get('@type') == 'Product':
-                    print(f"공통 파서 추출 성공: {data['offers']['price']}원")
+                    print(f"공통 파서 추출 성공 (JSON-LD A): {data['offers']['price']}원")
                     return extract_number_from_price(data['offers']['price'])
+
+                # 케이스 B: {"@graph": [...]} 형태
+                if isinstance(data, dict):
+                    graph = data.get('@graph')
+                elif isinstance(data, list):
+                    graph = data
+
+                if graph:
+                    for item in graph:
+                        if isinstance(item, dict) and item.get('@type') == 'Product':
+                            offers = item.get('offers', {})
+                            price = offers.get('price') if isinstance(offers, dict) else None
+                            if price:   
+                                print(f"공통 파서 추출 성공 (JSON-LD @graph): {price}원")
+                                return extract_number_from_price(price)
             except: pass
+        # 방법 2: 특정 클래스 조건 태그 우선 탐색
+        price_num_pattern = re.compile(r'^[0-9,]+$')
+        # .price 태그의 숫자 자식
+        for parent in self.soup.find_all(class_='price'):
+            for tag in parent.find_all():
+                text = tag.get_text(strip=True)
+                if price_num_pattern.match(text):
+                    price_val = extract_number_from_price(text)
+                    if price_val and price_val >= 100:
+                        print(f"공통 파서 추출 성공 (price 하위 태그): {text}원")
+                        return price_val
+
+        # 방법 3: 일반 태그 텍스트 탐색 (span, b, h2, p, strong, em)
+        for tag in self.soup.find_all(['span', 'b', 'h2', 'p', 'strong', 'em']):
+            text = tag.get_text(strip=True)
+            if price_num_pattern.match(text):
+                price_val = extract_number_from_price(text)
+                if price_val and price_val >= 100:
+                    print(f"공통 파서 추출 성공 (태그 텍스트): {text}원")
+                    return price_val
+
         return None
 
     def parse_product_name(self):
@@ -50,67 +88,13 @@ class CommonParser(BaseParser):
         return "https://placehold.co/600x600/f8fafc/2563eb.png?text=No+Image"
 
 
-class KurlyParser(CommonParser):
+def parse_product_info(soup, site_type="", url=""):
     """
-    마켓컬리 전용 파서
-    """
-    def parse_price(self):
-        price = super().parse_price()
-        if price:
-            return price
-
-        # 컬리: 클래스명이 유동적이므로 패턴으로 접근
-        price_tag = self.soup.find('span', string=re.compile(r'^[0-9,]+$'))
-        if price_tag:
-            print(f"추출 성공: {price_tag.text}원")
-            return extract_number_from_price(price_tag.text)
-
-        return None
-
-
-class SsgParser(CommonParser):
-    """
-    이마트몰 전용 파서
-    """
-    def parse_price(self):
-        price = super().parse_price()
-        if price:
-            return price
-
-        # 이마트몰: .ssg_price 클래스 타겟
-        price_tag = self.soup.select_one('.cdtl_optprice .ssg_price')
-        if price_tag:
-            print(f"추출 성공: {price_tag.text}원")
-            return extract_number_from_price(price_tag.text)
-
-        return None
-
-
-class OasisParser(CommonParser):
-    """
-    오아시스 전용 파서
-    """
-    def parse_price(self):
-        price = super().parse_price()
-        if price:
-            return price
-
-        # 오아시스: .textPrice 내의 b 태그 (실 판매가)
-        price_tag = self.soup.select_one('.textPrice > b')
-        if price_tag:
-            print(f"추출 성공: {price_tag.text}원")
-            return extract_number_from_price(price_tag.text)
-
-        return None
-
-
-def parse_product_info(soup, site_type, url=""):
-    """
-    쇼핑몰 타입에 따라 적절한 파서를 선택하여 정보 추출
+    쇼핑몰 타입에 관계없이 공통 파서를 사용하여 정보 추출
 
     Args:
         soup: BeautifulSoup 객체
-        site_type: 쇼핑몰 타입 ('kurly', 'ssg', 'oasis' 등)
+        site_type: 쇼핑몰 타입 (현재 사용 안함, 호환성을 위해 유지)
         url: 상품의 URL
 
     Returns:
@@ -120,15 +104,7 @@ def parse_product_info(soup, site_type, url=""):
             'image_url': str
         }
     """
-    if site_type == "kurly":
-        parser = KurlyParser(soup, url)
-    elif site_type == "ssg":
-        parser = SsgParser(soup, url)
-    elif site_type == "oasis":
-        parser = OasisParser(soup, url)
-    else:
-        # 다른 쇼핑몰은 공통 파서 사용
-        parser = CommonParser(soup, url)
+    parser = CommonParser(soup, url)
 
     return {
         'name': parser.parse_product_name(),
